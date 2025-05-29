@@ -49,7 +49,11 @@ AGENT_WORKFLOW_INFO = {
     "github-arbitrage-agent-bot": {"repo": f"{OWNER}/github-arbitrage-agent", "workflow_file": "main.yml", "schedule_minutes": 240},
     "ai-wrapper-factory-bot": {"repo": f"{OWNER}/ai-wrapper-factory", "workflow_file": "main.yml", "schedule_minutes": 240},
     "crypto-financial-core-bot": {"repo": f"{OWNER}/crypto-financial-core", "workflow_file": "main.yml", "schedule_minutes": 15},
-    # Add all agents defined in AGENT_MAPPING
+    "autonomous-infrastructure-bot": {"repo": f"{OWNER}/autonomous-infrastructure", "workflow_file": "main.yml", "schedule_minutes": 30},
+    "performance-optimizer-bot": {"repo": f"{OWNER}/performance-optimizer", "workflow_file": "main.yml", "schedule_minutes": 180},
+    "financial-manager-bot": {"repo": f"{OWNER}/financial-manager", "workflow_file": "main.yml", "schedule_minutes": 1440}, # daily
+    # Add all agents defined in AGENT_MAPPING if they have scheduled workflows to monitor
+    # For agents triggered only by task assignment, health check might be different (e.g., time since last completed task)
 }
 
 
@@ -113,11 +117,14 @@ class GitHubAgentController:
         try:
             issues = self._github_api_request("GET", endpoint, params=params)
             pending_tasks = []
-            if issues:
+            if issues: # API returns a list of issues
                 for issue in issues:
                     try:
                         # Task details are expected in the issue body as JSON
-                        task_details = json.loads(issue.get("body", "{}"))
+                        task_details_json = issue.get("body", "{}")
+                        if not task_details_json.strip(): # Handle empty body
+                            task_details_json = "{}"
+                        task_details = json.loads(task_details_json)
                         if "type" in task_details and "id" in task_details: # Basic validation
                             pending_tasks.append({"issue_number": issue["number"], "details": task_details, "title": issue["title"]})
                         else:
@@ -161,11 +168,10 @@ class GitHubAgentController:
         print("🔄 Monitoring for completed tasks...")
         endpoint = f"/repos/{AGENT_TASKS_REPO}/issues"
         # Check issues that are in-progress or recently updated and closed
-        # GitHub API doesn't allow OR for labels easily, so we might need multiple queries or broader fetch
         params = {"labels": "in-progress", "state": "all", "sort": "updated", "direction": "desc", "per_page": 50}
         try:
             issues = self._github_api_request("GET", endpoint, params=params)
-            if not issues:
+            if not issues: # API returns a list
                 print("No 'in-progress' tasks found to monitor.")
                 return
 
@@ -179,7 +185,7 @@ class GitHubAgentController:
                 task_marked_done_by_comment = False
                 if comments_url:
                     comments = self._github_api_request("GET", "", base_url=comments_url) # Pass full URL
-                    if comments:
+                    if comments: # API returns a list
                         for comment in reversed(comments): # Check recent comments first
                             if "DONE ✅" in comment.get("body", ""):
                                 task_marked_done_by_comment = True
@@ -219,9 +225,9 @@ class GitHubAgentController:
             params = {"status": "success", "per_page": 1} # Get the latest successful run
             
             try:
-                runs = self._github_api_request("GET", endpoint, params=params)
-                if runs and runs.get("workflow_runs"):
-                    last_run = runs["workflow_runs"][0]
+                runs_response = self._github_api_request("GET", endpoint, params=params)
+                if runs_response and runs_response.get("workflow_runs"): # API returns an object with 'workflow_runs' list
+                    last_run = runs_response["workflow_runs"][0]
                     last_run_time_str = last_run.get("updated_at") # or "created_at"
                     last_run_time = datetime.fromisoformat(last_run_time_str.replace("Z", "+00:00"))
                     
@@ -269,7 +275,7 @@ class GitHubAgentController:
         try:
             # Check if a similar open alert already exists to avoid spamming
             open_alerts = self._github_api_request("GET", f"/repos/{AGENT_CONTROLLER_REPO}/issues", params={"labels": "alert,health-check", "state": "open", "creator": self.controller_bot_username})
-            if open_alerts:
+            if open_alerts: # API returns a list
                 for alert in open_alerts: # A very basic check, could be more sophisticated
                     if "Automated Health Alert" in alert.get("title", ""):
                         print("An open health alert already exists. Skipping new issue creation.")
@@ -285,46 +291,40 @@ class GitHubAgentController:
 
     def update_system_metrics(self):
         print("📊 Updating system metrics...")
-        # Fetch task counts by labels
         pending_count = 0
         inprogress_count = 0
-        completed_count = 0
-        failed_count = 0 # Assuming a 'failed' label exists or closed without "DONE"
+        completed_today_count = 0
 
         try:
-            # Fix: Always use len() on the returned list
+            # Corrected logic: API returns a list of issues. We need len().
             issues_todo = self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "todo", "state": "open"})
             pending_count = len(issues_todo) if isinstance(issues_todo, list) else 0
 
             issues_inprogress = self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "in-progress", "state": "open"})
             inprogress_count = len(issues_inprogress) if isinstance(issues_inprogress, list) else 0
             
-            # Completed could be closed issues with 'completed' label
             since_date = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
             issues_completed = self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "completed", "state": "closed", "since": since_date})
             completed_today_count = len(issues_completed) if isinstance(issues_completed, list) else 0
 
-            # This is a simplified metrics structure. Could be expanded.
             metrics = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "tasks_pending": pending_count,
                 "tasks_in_progress": inprogress_count,
                 "tasks_completed_last_24h": completed_today_count,
-                "active_agents": len(AGENT_MAPPING), # Simplistic, could be based on health checks
-                "pionex_balance_usdt": self.get_pionex_balance(), # Example integration
+                "active_agents": len(AGENT_MAPPING), 
+                "pionex_balance_usdt": self.get_pionex_balance(),
             }
             
             metrics_file_path = f"metrics/daily_metrics_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.json"
             
-            # Try to get existing metrics file to append, or create new
             try:
                 existing_content_res = self._github_api_request(
                     "GET", f"/repos/{AGENT_RESULTS_REPO}/contents/{metrics_file_path}"
                 )
                 existing_metrics_data = []
                 sha = None
-                if existing_content_res and 'content' in existing_content_res: # File exists
-                    import base64
+                if existing_content_res and 'content' in existing_content_res: 
                     content = base64.b64decode(existing_content_res['content']).decode('utf-8')
                     existing_metrics_data = json.loads(content)
                     sha = existing_content_res['sha']
@@ -336,17 +336,16 @@ class GitHubAgentController:
                 commit_data = {
                     "message": commit_message,
                     "content": new_content_b64,
-                    "branch": "main" # Or default branch
+                    "branch": "main" 
                 }
-                if sha: # If updating existing file
+                if sha: 
                     commit_data["sha"] = sha
 
                 self._github_api_request("PUT", f"/repos/{AGENT_RESULTS_REPO}/contents/{metrics_file_path}", data=commit_data)
                 print(f"✅ System metrics updated in {AGENT_RESULTS_REPO}/{metrics_file_path}")
 
-            except Exception as e: # Catch broader errors for file operations
-                 # If file doesn't exist or other error, create it
-                if "404" in str(e) or not sha: # File not found, create new
+            except Exception as e: 
+                if "404" in str(e) or (existing_content_res and existing_content_res.get("type") != "file"): # File not found or not a file, create new
                     new_content_b64 = base64.b64encode(json.dumps([metrics], indent=2).encode('utf-8')).decode('utf-8')
                     commit_message = f"Create system metrics {datetime.now(timezone.utc).isoformat()}"
                     commit_data = {
@@ -365,8 +364,6 @@ class GitHubAgentController:
     def get_pionex_balance(self):
         # Placeholder for actual Pionex API integration
         # This would typically involve calling the crypto_financial_core logic
-        # For now, returning a dummy value.
-        # Ensure PIONEX_API_KEY and PIONEX_API_SECRET are available if implementing
         # from crypto_financial_core import PionexAPI # Example
         # pionex_api = PionexAPI(os.getenv("PIONEX_API_KEY"), os.getenv("PIONEX_API_SECRET"))
         # return pionex_api.get_balance("USDT") 
@@ -377,11 +374,9 @@ class GitHubAgentController:
         
         # 1. Scan for and assign new tasks
         pending_tasks = self.get_pending_tasks()
-        # Prioritize tasks (e.g. by a 'priority' field in task_issue['details'] or specific labels)
-        # For now, FIFO based on 'created asc' from get_pending_tasks
         for task in pending_tasks:
             self.assign_task_to_agent(task)
-            time.sleep(1) # Small delay to avoid hitting secondary rate limits if many tasks
+            time.sleep(1) 
 
         # 2. Monitor completed tasks
         self.monitor_completed_tasks()
