@@ -133,7 +133,7 @@ class GitHubAPI:
         per_page = 100
         while True:
             endpoint = "/user/repos" # Gets repos for the authenticated user
-            params = {"type": "owner", "per_page": per_page, "page": page, "affiliation": "owner"}
+            params = {"per_page": per_page, "page": page, "affiliation": "owner"}
             current_page_repos = self._request("GET", endpoint, params=params)
             if current_page_repos is None:
                 logger.error(f"Failed to fetch user repositories on page {page}.")
@@ -199,14 +199,23 @@ def main():
 
     # --- Fetch repositories ---
     logger.info(f"Fetching repositories for organization/user: {GITHUB_ORG}...")
-    # Try fetching as an organization first
-    repos = github.get_org_repos(GITHUB_ORG)
-    if not repos: # If no org repos, try fetching as user repos (in case GITHUB_ORG is a username)
-        logger.info(f"No repositories found for org '{GITHUB_ORG}'. Trying to fetch repositories for the authenticated user...")
+    # Check if GITHUB_ORG is likely a username and prioritize fetching user repos
+    if GITHUB_ORG == "zipaJopa":
+        logger.info(f"'{GITHUB_ORG}' is specified as the target. Assuming it's a username and fetching user repositories...")
         repos = github.get_user_repos()
         if not repos:
-            logger.error(f"❌ Failed to fetch any repositories for '{GITHUB_ORG}' (as org or user). Please check PAT permissions and org/user name.")
-            sys.exit(1)
+             logger.error(f"❌ Failed to fetch any repositories for user '{GITHUB_ORG}'. Please check PAT permissions and username.")
+             sys.exit(1)
+    else:
+        # Original logic: Try fetching as an organization first, then fallback to user
+        logger.info(f"Fetching repositories for organization/user: {GITHUB_ORG}...")
+        repos = github.get_org_repos(GITHUB_ORG)
+        if not repos: # If no org repos, try fetching as user repos (in case GITHUB_ORG is a username)
+            logger.info(f"No repositories found for org '{GITHUB_ORG}'. Trying to fetch repositories for the authenticated user...")
+            repos = github.get_user_repos()
+            if not repos:
+                logger.error(f"❌ Failed to fetch any repositories for '{GITHUB_ORG}' (as org or user). Please check PAT permissions and org/user name.")
+                sys.exit(1)
 
     logger.info(f"Found {len(repos)} repositories to process.")
 
