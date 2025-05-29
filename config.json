@@ -1,0 +1,10 @@
+{
+  "agent_types": [
+    "harvester",
+    "analyzer",
+    "content",
+    "research"
+  ],
+  "execution_interval": 300,
+  "max_concurrent_tasks": 10
+}
