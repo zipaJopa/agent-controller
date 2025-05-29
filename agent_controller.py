@@ -7,6 +7,7 @@ import os
 import json
 import time
 import requests
+import base64
 from datetime import datetime, timedelta, timezone
 
 # Configuration
@@ -291,17 +292,17 @@ class GitHubAgentController:
         failed_count = 0 # Assuming a 'failed' label exists or closed without "DONE"
 
         try:
-            issues_todo = self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "todo", "state": "open", "per_page": 1}) # Just need total_count
-            pending_count = issues_todo.get("total_count", 0) if isinstance(issues_todo, list) else len(self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "todo", "state": "open"}) or [])
+            # Fix: Always use len() on the returned list
+            issues_todo = self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "todo", "state": "open"})
+            pending_count = len(issues_todo) if isinstance(issues_todo, list) else 0
 
-
-            issues_inprogress = self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "in-progress", "state": "open", "per_page": 1})
-            inprogress_count = issues_inprogress.get("total_count", 0) if isinstance(issues_inprogress, list) else len(self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "in-progress", "state": "open"}) or [])
+            issues_inprogress = self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "in-progress", "state": "open"})
+            inprogress_count = len(issues_inprogress) if isinstance(issues_inprogress, list) else 0
             
             # Completed could be closed issues with 'completed' label
-            issues_completed = self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "completed", "state": "closed", "per_page": 1, "since": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()}) # Recently completed
-            completed_today_count = issues_completed.get("total_count", 0) if isinstance(issues_completed, list) else len(self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "completed", "state": "closed", "since": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()}) or [])
-
+            since_date = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+            issues_completed = self._github_api_request("GET", f"/repos/{AGENT_TASKS_REPO}/issues", params={"labels": "completed", "state": "closed", "since": since_date})
+            completed_today_count = len(issues_completed) if isinstance(issues_completed, list) else 0
 
             # This is a simplified metrics structure. Could be expanded.
             metrics = {
